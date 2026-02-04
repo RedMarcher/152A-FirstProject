@@ -9,6 +9,12 @@ This project implements three congestion control protocols (Stop-and-Wait, Fixed
 - `sender_reno.py`: Sender implementation for TCP Reno.
 - `2024_congestion_control_ecs152a/`: Contains the network simulator and receiver code.
 
+## Setup
+Clone the required network simulator repository into the project root:
+```bash
+git clone git@github.com:klvijeth/2024_congestion_control_ecs152a.git
+```
+
 ## How to Run
 
 ### 1. Start the Network Simulator
