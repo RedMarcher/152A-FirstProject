@@ -1,8 +1,6 @@
 import socket
 import sys
 import time
-import os
-import struct
 import select
 
 # -----------------------------------------------------------------------------
@@ -144,12 +142,15 @@ def calculate_metrics(start_time, end_time, total_data_size, seq_ids, packet_sen
 # Main Execution
 # -----------------------------------------------------------------------------
 def main():
+    # State Variables
+    base_idx = 0
+    next_seq_idx = 0
+
     # Initialization
     chunks = read_file_data(FILE_PATH)
     total_chunks = len(chunks)
     total_data_size = sum(len(c) for c in chunks)
     
-    # Prepare sequence numbers
     packets_data = {}
     for i, chunk in enumerate(chunks):
         seq_id = i * MESSAGE_SIZE
@@ -157,10 +158,6 @@ def main():
         
     seq_ids = sorted(packets_data.keys())
     acked = {seq: False for seq in seq_ids}
-    
-    # State Variables
-    base_idx = 0
-    next_seq_idx = 0
     
     # Time Tracking
     packet_send_times = {}       # First send time per packet
@@ -177,7 +174,11 @@ def main():
     
     # Transmission Loop
     while base_idx < total_chunks:
-        # Window Filling: Send new packets inside the window
+        
+        # ---------------------------------------------------------------------
+        # 1. Window Filling
+        #    Send new packets until the sliding window is full.
+        # ---------------------------------------------------------------------
         while next_seq_idx < base_idx + WINDOW_SIZE and next_seq_idx < total_chunks:
             seq_to_send = seq_ids[next_seq_idx]
             current_time = time.time()
@@ -193,11 +194,17 @@ def main():
             send_chunk(sock, server_addr, seq_to_send, packets_data[seq_to_send])
             next_seq_idx += 1
 
-        # Handle ACKs: Check socket and move base
+        # ---------------------------------------------------------------------
+        # 2. ACK Handling
+        #    Check for incoming ACKs and move base.
+        # ---------------------------------------------------------------------
         new_base_idx = receive_acks(sock, base_idx, seq_ids, acked, packet_ack_times, total_chunks)
         base_idx = new_base_idx
         
-        # Handle Timeouts: Retransmit base if needed
+        # ---------------------------------------------------------------------
+        # 3. Timeout Handling
+        #    Retransmit base if needed.
+        # ---------------------------------------------------------------------
         if base_idx < total_chunks:
             handle_timeout(sock, server_addr, base_idx, seq_ids, packets_data, packet_last_sent_times)
 

@@ -149,12 +149,16 @@ class RenoState:
 # Main Execution
 # -----------------------------------------------------------------------------
 def main():
+    # State Variables
+    base_idx = 0
+    next_seq_idx = 0
+    reno = RenoState()
+
     # Initialization
     chunks = read_file_data(FILE_PATH)
     total_chunks = len(chunks)
     total_data_size = sum(len(c) for c in chunks)
     
-    # Prepare sequence numbers
     packets_data = {}
     for i, chunk in enumerate(chunks):
         seq_id = i * MESSAGE_SIZE
@@ -162,11 +166,6 @@ def main():
         
     seq_ids = sorted(packets_data.keys())
     acked = {seq: False for seq in seq_ids}
-    
-    # State Variables
-    base_idx = 0
-    next_seq_idx = 0
-    reno = RenoState()
     
     # Time Tracking
     packet_send_times = {}       # First send time per packet
@@ -180,13 +179,12 @@ def main():
         
     start_time = time.time()
     
-    # Transmission Loop
     while base_idx < total_chunks:
         
-        # Send packets while within cwnd
-        #    Effective window limit: min(cwnd, total_chunks - base_idx)
-        #    But we can just check if number of in-flight packets < cwnd
-        
+        # ---------------------------------------------------------------------
+        # 1. Transmission Phase
+        #    Send packets while the number of in-flight packets is within cwnd.
+        # ---------------------------------------------------------------------
         while next_seq_idx < total_chunks:
             # Calculate packets currently in flight
             # In-flight = (next_seq_idx - base_idx)
@@ -208,8 +206,10 @@ def main():
                 # Window is full
                 break
 
-        # Check for ACKs (Non-blocking)
-        #    We want to process all available ACKs to update window quickly
+        # ---------------------------------------------------------------------
+        # 2. Acknowledgement Phase
+        #    Process all available ACKs to update state and drain buffer.
+        # ---------------------------------------------------------------------
         ready = select.select([sock], [], [], 0.01)
         if ready[0]:
             try:
@@ -255,7 +255,10 @@ def main():
             except Exception:
                 pass
         
-        # Check Timeout
+        # ---------------------------------------------------------------------
+        # 3. Timeout Phase
+        #    Retransmit the base packet if the timeout interval has passed.
+        # ---------------------------------------------------------------------
         if base_idx < total_chunks:
             base_seq = seq_ids[base_idx]
             if base_seq in packet_last_sent_times:
@@ -269,8 +272,6 @@ def main():
                     send_chunk(sock, server_addr, base_seq, packets_data[base_seq])
                     
                     # Reset ssthresh and cwnd, then retransmit base packet.
-                    # We don't reset next_seq_idx because we want to maintain the current "next available" pointer,
-                    # but the reduced cwnd will naturally prevent new sends until ACKs clear up the window.
                     pass
 
     # Transmission completed
