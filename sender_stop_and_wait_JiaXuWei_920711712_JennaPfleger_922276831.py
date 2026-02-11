@@ -5,7 +5,9 @@ import os
 import struct
 import select
 
+# -----------------------------------------------------------------------------
 # Configuration
+# -----------------------------------------------------------------------------
 RECEIVER_IP = "localhost"
 RECEIVER_PORT = 5001
 PACKET_SIZE = 1024
@@ -14,7 +16,9 @@ MESSAGE_SIZE = PACKET_SIZE - SEQ_ID_SIZE
 FILE_PATH = "2024_congestion_control_ecs152a/docker/file.mp3" 
 TIMEOUT = 1.0 
 
-# Helpers
+# -----------------------------------------------------------------------------
+# Helper Functions
+# -----------------------------------------------------------------------------
 def read_file_data(file_path):
     """
     Reads the file at file_path and parses it into chunks of MESSAGE_SIZE.
@@ -33,17 +37,20 @@ def read_file_data(file_path):
         sys.exit(1)
     return chunks
 
+def create_packet(seq_id, data):
+    """
+    Creates a packet with the 4-byte big-endian sequence ID prepended to data.
+    """
+    # Convert sequence_id to 4 bytes, big-endian order
+    seq_bytes = seq_id.to_bytes(SEQ_ID_SIZE, byteorder='big', signed=True)
+    return seq_bytes + data
+
 def send_chunk(sock, addr, seq_id, chunk):
     """
     Sends a specific data chunk with its sequence ID to the address.
     """
     pkt = create_packet(seq_id, chunk)
     sock.sendto(pkt, addr)
-
-def create_packet(seq_id, data):
-    # Create packet with sequence ID (4 bytes big endian) + data
-    seq_bytes = seq_id.to_bytes(SEQ_ID_SIZE, byteorder='big', signed=True)
-    return seq_bytes + data
 
 def calculate_metrics(start_time, end_time, total_data_size, seq_ids, packet_send_times, packet_ack_times):
     """
@@ -73,10 +80,11 @@ def calculate_metrics(start_time, end_time, total_data_size, seq_ids, packet_sen
         
     print(f"{throughput:.7f}, {avg_delay:.7f}, {performance:.7f}")
 
-# Main
+# -----------------------------------------------------------------------------
+# Main Execution
+# -----------------------------------------------------------------------------
 def main():
-    #print("Starting Stop-and-Wait Sender...")
-
+    # Initialization
     chunks = read_file_data(FILE_PATH)
     total_chunks = len(chunks)
     total_data_size = sum(len(c) for c in chunks)
@@ -89,7 +97,7 @@ def main():
 
     server_addr = (RECEIVER_IP, RECEIVER_PORT)
     
-    # Create UDP socket
+    # Setup Socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(0.0)
 
@@ -97,14 +105,19 @@ def main():
     
     for i in seq_ids:
         try:
-            # - Send packet
+            # -----------------------------------------------------------------
+            # 1. Send Packet
+            #    Send the current packet to the receiver.
+            # -----------------------------------------------------------------
             seq_id = i * MESSAGE_SIZE
             send_chunk(sock, server_addr, seq_id, chunks[i])
             packet_send_times[i] = time.time()
             packet_last_sent_times[i] = time.time()
-            #print("Sending ", seq_id)
 
-            # - Wait for Ack
+            # -----------------------------------------------------------------
+            # 2. Wait for ACK
+            #    Wait for the ACK for the current packet.
+            # -----------------------------------------------------------------
             while True:
                 ready = select.select([sock], [], [], TIMEOUT)
                 if ready[0]:
@@ -116,23 +129,26 @@ def main():
                         packet_ack_times[i] = time.time()
                         break
                 else:
-                    # - Retransmit on timeout
-                    #print("Retransmit ", seq_id)
+                    # ---------------------------------------------------------
+                    # 3. Timeout / Retransmit
+                    #    Retransmit the packet if timeout occurs.
+                    # ---------------------------------------------------------
                     send_chunk(sock, server_addr, seq_id, chunks[i])
                     packet_last_sent_times[i] = time.time()
-            
-            pass
             
         except TimeoutError:
             print("TimeoutError")
 
     end_time = time.time()
     
+    # Send FINACK multiple times to close connection
     fin_packet = create_packet(seq_ids[-1] + MESSAGE_SIZE, b'==FINACK==')
     for _ in range(5):
         sock.sendto(fin_packet, server_addr)
         time.sleep(0.2)
+        
     sock.close()
+    
     calculate_metrics(start_time, end_time, total_data_size, seq_ids, packet_send_times, packet_ack_times)
 
 if __name__ == "__main__":
