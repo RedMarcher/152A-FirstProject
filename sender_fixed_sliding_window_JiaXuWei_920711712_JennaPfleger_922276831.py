@@ -40,7 +40,10 @@ def create_packet(seq_id, data):
     """
     Creates a packet with the 4-byte big-endian sequence ID prepended to data.
     """
+    # Convert sequence_id to 4 bytes, big-endian order
     seq_bytes = seq_id.to_bytes(SEQ_ID_SIZE, byteorder='big', signed=True)
+    
+    # Concatenate the sequence bytes with the actual data payload
     return seq_bytes + data
 
 def send_chunk(sock, addr, seq_id, chunk):
@@ -71,6 +74,7 @@ def receive_acks(sock, base_idx, seq_ids, acked, packet_ack_times, total_chunks)
         try:
             data, _ = sock.recvfrom(1024)
             if len(data) >= SEQ_ID_SIZE:
+                # Extract the first 4 bytes as the ACK sequence number
                 ack_seq_bytes = data[:SEQ_ID_SIZE]
                 ack_seq = int.from_bytes(ack_seq_bytes, byteorder='big', signed=True)
                 
@@ -82,6 +86,8 @@ def receive_acks(sock, base_idx, seq_ids, acked, packet_ack_times, total_chunks)
                     current_seq = seq_ids[base_idx]
                     
                     # If current sequence is strictly less than ACK, it's acknowledged
+                    # This relies on the Cumulative ACK property:
+                    # An ACK of 'N' implies all bytes < N have been received.
                     if current_seq < ack_seq:
                         if not acked[current_seq]:
                             acked[current_seq] = True
@@ -103,10 +109,14 @@ def handle_timeout(sock, addr, base_idx, seq_ids, packets_data, packet_last_sent
     
     # Only check if we have sent it at least once
     if base_seq in packet_last_sent_times:
+        # Calculate time elapsed since the last time we sent this packet
         time_since_last_send = time.time() - packet_last_sent_times[base_seq]
         
         if time_since_last_send > TIMEOUT:
             # Retransmit the base packet
+            # Since the receiver buffers out-of-order packets, simply retransmitting
+            # the oldest missing packet (Selective Retransmit of the base) is sufficient
+            # to plug the hole and allow the Cumulative ACK to jump forward.
             packet_last_sent_times[base_seq] = time.time()
             send_chunk(sock, addr, base_seq, packets_data[base_seq])
 
@@ -179,6 +189,9 @@ def main():
         # 1. Window Filling
         #    Send new packets until the sliding window is full.
         # ---------------------------------------------------------------------
+
+        # Current Window Range = [base_idx, base_idx + WINDOW_SIZE)
+        # Packet index cannot exceed this range.
         while next_seq_idx < base_idx + WINDOW_SIZE and next_seq_idx < total_chunks:
             seq_to_send = seq_ids[next_seq_idx]
             current_time = time.time()

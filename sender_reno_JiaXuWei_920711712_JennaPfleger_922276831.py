@@ -43,6 +43,7 @@ def create_packet(seq_id, data):
     """
     Creates a packet with the 4-byte big-endian sequence ID prepended to data.
     """
+    # Convert sequence_id to 4 bytes, big-endian order
     seq_bytes = seq_id.to_bytes(SEQ_ID_SIZE, byteorder='big', signed=True)
     return seq_bytes + data
 
@@ -98,16 +99,19 @@ class RenoState:
         # If we experienced a timeout or new data is acked, we exit fast recovery
         if self.in_fast_recovery:
             self.in_fast_recovery = False
-            self.cwnd = self.ssthresh  # Deflate window back to ssthresh
+            self.cwnd = self.ssthresh  # Deflate window back to ssthresh (Completion of Fast Recovery)
 
         self.dup_acks = 0
 
-        # Congestion Control Logic
+        # Congestion Control Logic (AIMD)
+        # 1. Slow Start Phase
         if self.cwnd < self.ssthresh:
-            # Slow Start: increase by 1 per ACK
+            # Increase by 1 full Packet per ACK (Exponential)
             self.cwnd += 1
         else:
-            # Congestion Avoidance: increase by 1/cwnd per ACK (linear growth per RTT)
+            # 2. Congestion Avoidance Phase
+            # Increase by 1/cwnd per ACK.
+            # This means the window grows by 1 Packet per Round Trip Time (RTT). (Linear))
             self.cwnd += 1.0 / self.cwnd
 
     def on_dup_ack(self, sock, addr, missing_seq, packets_data, packet_last_sent_times):
@@ -118,10 +122,15 @@ class RenoState:
         self.dup_acks += 1
         
         if self.dup_acks == 3:
-            # Fast Retransmit
-            # Set ssthresh to max(cwnd/2, 2)
+            # 3. Fast Retransmit
+            # When we receive 3 duplicate ACKs, we assume the packet is lost.
+            # We don't wait for timeout.
+            
+            # Halve the threshold (Multiplicative Decrease)
             self.ssthresh = max(self.cwnd / 2, 2)
+            
             # Enter Fast Recovery
+            # Set cwnd to ssthresh + 3 (inflation for the 3 dup ACKs received)
             self.cwnd = self.ssthresh + 3
             self.in_fast_recovery = True
             
@@ -132,6 +141,7 @@ class RenoState:
                 return True
         elif self.dup_acks > 3:
             # Fast Recovery: Inflate window for each additional dup ACK
+            # This allows us to send new data if the window allows
             self.cwnd += 1
             
         return False
@@ -140,8 +150,14 @@ class RenoState:
         """
         Called when a timeout occurs.
         """
+        # Timeout is a severe congestion signal.
+        # 1. Collapse ssthresh to half of current cwnd
         self.ssthresh = max(self.cwnd / 2, 2)
+        
+        # 2. Reset cwnd to 1 (Slow Start Restart)
         self.cwnd = 1
+        
+        # Reset other states
         self.dup_acks = 0
         self.in_fast_recovery = False
 
@@ -188,7 +204,9 @@ def main():
         while next_seq_idx < total_chunks:
             # Calculate packets currently in flight
             # In-flight = (next_seq_idx - base_idx)
-            # Note: We must compare against cwnd
+            # This represents the number of unacknowledged packets currently in the network.
+            # We must checks strict inequality against cwnd (Congestion Window).
+            # If flight size < cwnd, we are allowed to inject more packets.
             if (next_seq_idx - base_idx) < reno.cwnd:
                 seq_to_send = seq_ids[next_seq_idx]
                 current_time = time.time()
@@ -228,7 +246,9 @@ def main():
                             # If ack_seq > base_seq, it acked something new
                             if ack_seq > base_seq:
                                 # Standard New ACK
-                                # It Cumulative ACKs everything before ack_seq
+                                # It Cumulative ACKs everything before ack_seq.
+                                # Because of Cumulative ACK, receiving ack_seq means ALL packets
+                                # with sequence sequence numbers < ack_seq have been safely received.
                                 
                                 # Advance base_idx
                                 old_base_idx = base_idx
@@ -246,6 +266,7 @@ def main():
                             elif ack_seq == base_seq:
                                 # Duplicate ACK: Receiver is still waiting for base_seq.
                                 # Since ack_seq == base_seq, this confirms the receiver has not yet received base_seq.
+                                # Receiving 3 of these triggers Fast Retransmit.
                                 reno.on_dup_ack(sock, server_addr, base_seq, packets_data, packet_last_sent_times)
 
                             # If ack_seq < base_seq, it's an old ACK, ignore.
@@ -265,13 +286,16 @@ def main():
                 time_since_last_send = time.time() - packet_last_sent_times[base_seq]
                 if time_since_last_send > TIMEOUT:
                     # Timeout occurred
+                    # This implies severe congestion or loss.
                     reno.on_timeout()
                     
                     # Retransmit base packet
+                    # Note: We only retransmit the oldest unacknowledged packet (base_seq).
+                    # This relies on the receiver's buffering capability to fill the hole.
                     packet_last_sent_times[base_seq] = time.time()
                     send_chunk(sock, server_addr, base_seq, packets_data[base_seq])
                     
-                    # Reset ssthresh and cwnd, then retransmit base packet.
+                    # Reset ssthresh and cwnd is handled in on_timeout.
                     pass
 
     # Transmission completed
